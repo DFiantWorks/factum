@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            mill: ./mill
+            cache_path: |
+              ~/.cache/coursier
+              ~/.cache/mill
+          - os: macos-latest
+            mill: ./mill
+            cache_path: |
+              ~/Library/Caches/Coursier
+              ~/.cache/mill
+          - os: windows-latest
+            mill: ./mill.bat
+            cache_path: |
+              ~/AppData/Local/Coursier/cache
+              ~/.cache/mill
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Cache the Mill launcher (~/.cache/mill on every OS) and the Coursier
+      # dependency cache (OS-specific default location).
+      - name: Cache Mill launcher & JVM dependencies
+        uses: actions/cache@v5
+        with:
+          path: ${{ matrix.cache_path }}
+          key: ${{ runner.os }}-mill-${{ hashFiles('build.mill') }}
+          restore-keys: |
+            ${{ runner.os }}-mill-
+
+      - name: Compile
+        run: ${{ matrix.mill }} __.compile
+
+      - name: Test
+        run: ${{ matrix.mill }} __.test
+
+      - name: Scalafmt check
+        run: ${{ matrix.mill }} __.checkFormat

@@ -1,0 +1,24 @@
+Factum
+Copyright 2026 Oron Port (DFiant Works)
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes code adapted from the following projects:
+
+1. sbt (https://github.com/sbt/sbt), Apache License 2.0
+   Copyright 2023 Scala center; Copyright 2011-2022 Lightbend, Inc.;
+   Copyright 2008-2010 Mark Harrah
+   - core/src/factum/Digest.scala
+     adapted from util-cache/src/main/scala/sbt/util/Digest.scala
+     (branch `develop`, retrieved 2026-07-09)
+   - The ActionCache / ActionCacheStore split (AC + CAS, aggregate stores)
+     informs core/src/factum/store/*.scala (design adaptation).
+
+2. Mill (https://github.com/com-lihaoyi/mill), MIT License
+   Copyright (c) Li Haoyi and Mill contributors
+   - core/src/factum/FileRef.scala
+     adapted from core/api/java11/src/mill/api/PathRef.scala
+     (branch `main`, retrieved 2026-07-09): recursive content digesting of
+     file trees, quick (mtime+size) mode, revalidation policy, and the
+     string wire-format approach. Reworked: SHA-256 digests, java.nio only,
+     filename filtering, no workspace aliasing.
