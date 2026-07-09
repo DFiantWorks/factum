@@ -15,8 +15,10 @@ import scala.collection.mutable
   * Traversal granularity:
   *   - classes in *directory* classpath entries (typical build output) are digested individually
   *     and their references followed;
-  *   - classes in *jars* fold the whole jar in as one unit (jars change atomically with versions,
-  *     so per-class granularity buys nothing);
+  *   - classes in *jars* fold the whole jar in as one unit: artifact-repository jars
+  *     (coursier/ivy/maven caches) by (name, mtime, size), since they are immutable by name; any
+  *     other jar (build-tool snapshot jars, pathing jars, fat jars) by full content, since such
+  *     jars can be re-created with fresh names and timestamps on every run;
   *   - JDK platform classes (`jrt:`) are skipped.
   *
   * Known blind spots, by design: reflection by name (`Class.forName("...")`), resources read at
@@ -36,12 +38,24 @@ object CodeRef:
     *   jars for which to follow per-class references instead of folding the whole jar in as one
     *   unit (default: none)
     * @param quickJars
-    *   digest folded-in jars by (name, mtime, size) instead of full content
+    *   digest artifact-repository jars by (name, mtime, size) instead of full content. Applies to
+    *   repository jars only: they are immutable by name, so quick attributes are a stable identity.
+    *   Any other folded-in jar (build-tool snapshot jars, pathing jars, fat jars) is always
+    *   digested by full content, because such jars can be re-created with fresh names and
+    *   timestamps on every run (e.g. sbt copies the classpath into temp jars for background runs)
+    *   and only their content identifies them.
     */
   final case class Config(
       traverseJar: Path => Boolean = _ => false,
       quickJars: Boolean = true
   )
+
+  object Config:
+    /** Whether a jar lives in an artifact-repository cache (immutable by name). */
+    val isRepositoryCacheJar: Path => Boolean = path =>
+      val p = path.toString.replace('\\', '/').toLowerCase
+      p.contains("/coursier/") || p.contains("/.ivy2/") || p.contains("/.m2/") ||
+      p.contains("/.gradle/") || p.contains("/.sbt/boot/")
 
   def apply(cls: Class[?]): CodeRef = apply(cls, Config())
 
@@ -117,11 +131,17 @@ object CodeRef:
     // coarse jars last, sorted by file name (machine-independent, unlike full paths)
     for (name, path) <- coarseJars do
       b.updateString("jar")
-      b.updateString(name)
-      if config.quickJars then
-        b.updateLong(Files.getLastModifiedTime(path).toMillis)
-        b.updateLong(Files.size(path))
-      else b.updateDigest(Digest.sha256File(path))
+      if Config.isRepositoryCacheJar(path) then
+        // immutable by name: name + quick attributes identify the artifact
+        b.updateString(name)
+        if config.quickJars then
+          b.updateLong(Files.getLastModifiedTime(path).toMillis)
+          b.updateLong(Files.size(path))
+        else b.updateDigest(Digest.sha256File(path))
+      else
+        // snapshot/pathing/fat jars are re-created with fresh names and timestamps;
+        // only their content is a stable identity (their names stay out of the digest)
+        b.updateDigest(Digest.sha256File(path))
 
     CodeRef(cls.getName, b.result)
   end apply

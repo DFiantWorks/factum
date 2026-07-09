@@ -108,37 +108,46 @@ class CodeRefSpec extends munit.FunSuite:
       codeRefOf(work.resolve("out2"), "Helper$").digest
     )
 
+  def mkJar(out: Path, jarPath: Path, mutateBystander: Boolean): Unit =
+    val jos = JarOutputStream(Files.newOutputStream(jarPath))
+    try
+      FileRef.walkFiltered(out, PathFilter.all).foreach { (rel, file) =>
+        jos.putNextEntry(JarEntry(rel))
+        val bytes = Files.readAllBytes(file)
+        // flip a byte in Bystander's class file only
+        if mutateBystander && rel.startsWith("Bystander") && rel.endsWith(".class") then
+          bytes(bytes.length - 1) = (bytes(bytes.length - 1) ^ 0x01).toByte
+        jos.write(bytes)
+        jos.closeEntry()
+      }
+    finally jos.close()
+
+  def refOfJar(jarPath: Path): CodeRef =
+    val loader = URLClassLoader(Array(jarPath.toUri.toURL), getClass.getClassLoader)
+    try CodeRef(loader.loadClass("Top"))
+    finally loader.close()
+
   work.test("jars fold in coarsely: any change inside the jar invalidates"): work =>
-    val src = work.resolve("src")
     val out = work.resolve("out")
-    compile(writeFixtures(src, "\"hello\"", "\"zzz\""), out)
-    def mkJar(jarPath: Path, mutateBystander: Boolean): Unit =
-      val jos = JarOutputStream(Files.newOutputStream(jarPath))
-      try
-        FileRef.walkFiltered(out, PathFilter.all).foreach { (rel, file) =>
-          jos.putNextEntry(JarEntry(rel))
-          val bytes = Files.readAllBytes(file)
-          // flip a byte in Bystander's class file only
-          if mutateBystander && rel.startsWith("Bystander") && rel.endsWith(".class") then
-            bytes(bytes.length - 1) = (bytes(bytes.length - 1) ^ 0x01).toByte
-          jos.write(bytes)
-          jos.closeEntry()
-        }
-      finally jos.close()
-    def refOfJar(jarPath: Path): CodeRef =
-      val loader = URLClassLoader(Array(jarPath.toUri.toURL), getClass.getClassLoader)
-      try CodeRef(loader.loadClass("Top"), CodeRef.Config(quickJars = false))
-      finally loader.close()
-    val jar1 = work.resolve("fixture1.jar")
-    val jar2 = work.resolve("fixture2.jar")
-    mkJar(jar1, mutateBystander = false)
-    mkJar(jar2, mutateBystander = true)
-    // rename to identical file names so only content differs
+    compile(writeFixtures(work.resolve("src"), "\"hello\"", "\"zzz\""), out)
+    // identical file names in separate dirs, so only content differs
     val dir1 = Files.createDirectory(work.resolve("j1")).resolve("fixture.jar")
     val dir2 = Files.createDirectory(work.resolve("j2")).resolve("fixture.jar")
-    Files.move(jar1, dir1)
-    Files.move(jar2, dir2)
+    mkJar(out, dir1, mutateBystander = false)
+    mkJar(out, dir2, mutateBystander = true)
     assertNotEquals(refOfJar(dir1).digest, refOfJar(dir2).digest)
+
+  work.test("non-repository jars are keyed by content: fresh names/mtimes do not invalidate"):
+    work =>
+      val out = work.resolve("out")
+      compile(writeFixtures(work.resolve("src"), "\"hello\"", "\"zzz\""), out)
+      // run-unique names, as an sbt background-run classpath snapshot would have
+      val jar1 = work.resolve("snapshot-1744.jar")
+      val jar2 = work.resolve("snapshot-1745.jar")
+      mkJar(out, jar1, mutateBystander = false)
+      Thread.sleep(10) // ensure a different mtime
+      mkJar(out, jar2, mutateBystander = false)
+      assertEquals(refOfJar(jar1).digest, refOfJar(jar2).digest)
 
   test("CodeRef over the library's own classes is deterministic and total"):
     val a = CodeRef(classOf[FileRef])
