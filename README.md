@@ -43,9 +43,9 @@ Not yet published to Maven Central; build locally with `./mill __.publishLocal`
 
 ```scala
 // mill
-def mvnDeps = Seq(mvn"io.github.dfiantworks::factum-core::0.1.0")
+def mvnDeps = Seq(mvn"io.github.dfiantworks::factum-core::0.2.0")
 // sbt
-libraryDependencies += "io.github.dfiantworks" %% "factum-core" % "0.1.0"
+libraryDependencies += "io.github.dfiantworks" %% "factum-core" % "0.2.0"
 ```
 
 ## Quick start
