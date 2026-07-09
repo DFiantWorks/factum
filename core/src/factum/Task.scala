@@ -15,8 +15,18 @@ enum Output derives CanEqual:
 
 /** Evaluation hooks (cache-hit logging, timing, etc.). All methods default to no-ops. */
 trait TaskListener:
+  /** A cache hit for this node. Fires before any file restore; the cached value may never be
+    * decoded at all (values materialize lazily, on demand).
+    */
   def onCacheHit(name: String): Unit = ()
   def onComputed(name: String, durationMillis: Long): Unit = ()
+
+  /** A cache hit is about to restore this node's declared output files/folders. Runs before
+    * anything is materialized or cleaned, e.g. to tear down external state. `value` decodes the
+    * cached value on demand (memoized); forcing it here is the only reason a hit of a non-demanded
+    * upstream node would ever decode.
+    */
+  def onBeforeFilesRestore(name: String, value: () => Any): Unit = ()
   def onFilesRestored(name: String, count: Int): Unit = ()
 
 object TaskListener:

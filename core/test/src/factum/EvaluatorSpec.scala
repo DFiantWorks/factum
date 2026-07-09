@@ -204,6 +204,47 @@ class EvaluatorSpec extends munit.FunSuite:
       assert(seen eq marker, s"worker context classloader was $seen, expected the marker loader")
     finally Thread.currentThread().setContextClassLoader(original)
 
+  test("upstream values are not decoded on a fully-cached chain"):
+    val store = MemoryStore()
+    val upDecodes = AtomicInteger(0)
+    val downDecodes = AtomicInteger(0)
+    def countingCodec(counter: AtomicInteger): Codec[String] = new Codec[String]:
+      def encode(value: String): Array[Byte] = value.getBytes
+      def decode(bytes: Array[Byte]): String =
+        counter.incrementAndGet()
+        String(bytes)
+    def task =
+      val up = Task.pure(1).cached("up")(n => s"up$n")(using countingCodec(upDecodes))
+      up.cached("down")(s => s + "!")(using countingCodec(downDecodes))
+    val ev = Evaluator(store)
+    assertEquals(ev.eval(task), "up1!")
+    assertEquals(upDecodes.get, 0) // first run computes, nothing decoded
+    assertEquals(downDecodes.get, 0)
+    assertEquals(ev.eval(task), "up1!")
+    assertEquals(downDecodes.get, 1) // the demanded final value
+    assertEquals(upDecodes.get, 0) // upstream hit contributed only its digest
+
+  dir.test("onBeforeFilesRestore fires before materialization and can force the value"): root =>
+    val outFile = root.resolve("gen/out.txt")
+    val task = Task.pure("v").cachedWithFiles("gen") { s =>
+      Files.createDirectories(outFile.getParent)
+      Files.writeString(outFile, "content")
+      (s, Vector(Output.File(outFile)))
+    }
+    val store = DiskStore(root.resolve("cache"))
+    Evaluator(store).eval(task)
+    Files.delete(outFile)
+    var fileExistedAtHook = true
+    var forcedValue: Any = null
+    val listener = new TaskListener:
+      override def onBeforeFilesRestore(name: String, value: () => Any): Unit =
+        fileExistedAtHook = Files.exists(outFile)
+        forcedValue = value()
+    assertEquals(Evaluator(store, listener = listener).eval(task), "v")
+    assert(!fileExistedAtHook, "hook must run before files are materialized")
+    assertEquals(forcedValue, "v")
+    assertEquals(Files.readString(outFile), "content")
+
   test("listener hooks fire on hit and compute"):
     val hits = AtomicInteger(0)
     val computes = AtomicInteger(0)

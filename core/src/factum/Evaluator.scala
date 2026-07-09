@@ -55,7 +55,12 @@ final class Evaluator(
     try Run(readCache, writeCache).evalNode(task).join().value
     catch case e: CompletionException => throw e.getCause
 
-  private final case class NodeResult[T](value: T, outDigest: Digest)
+  /** Per-node result: the output digest is always materialized (downstream keying needs it), but
+    * the *value* is a memoized thunk. On a fully-cached chain only the values actually demanded
+    * (the final result, a computing node's input, a pre-restore hook that forces) are ever decoded.
+    */
+  private final class NodeResult[T](thunk: () => T, val outDigest: Digest):
+    lazy val value: T = thunk()
 
   private final class Run(readCache: Boolean, writeCache: Boolean):
     private val memo = ConcurrentHashMap[Task[?], CompletableFuture[NodeResult[?]]]()
@@ -86,14 +91,14 @@ final class Evaluator(
       val result: CompletableFuture[NodeResult[T]] = task match
         case Task.Pure(value, codec) =>
           CompletableFuture.supplyAsync(
-            () => NodeResult(value, valueDigestOf(codec.encode(value))),
+            () => NodeResult(() => value, valueDigestOf(codec.encode(value))),
             pool
           )
         case Task.Input(_, compute, codec) =>
           CompletableFuture.supplyAsync(
             () =>
               val value = compute()
-              NodeResult(value, valueDigestOf(codec.encode(value)))
+              NodeResult(() => value, valueDigestOf(codec.encode(value)))
             ,
             pool
           )
@@ -101,7 +106,7 @@ final class Evaluator(
           CompletableFuture.supplyAsync(
             () =>
               val fr = FileRef(path, filter, quick)
-              NodeResult(fr, fr.digest)
+              NodeResult(() => fr, fr.digest)
             ,
             pool
           )
@@ -111,7 +116,7 @@ final class Evaluator(
             (ra, rb) =>
               val out = Digest.Builder().updateString("zip")
                 .updateDigest(ra.outDigest).updateDigest(rb.outDigest).result
-              NodeResult((ra.value, rb.value), out)
+              NodeResult(() => (ra.value, rb.value), out)
             ,
             pool
           )
@@ -122,7 +127,7 @@ final class Evaluator(
               val results = futures.map(_.join())
               val b = Digest.Builder().updateString("seq").updateInt(results.length)
               results.foreach(r => b.updateDigest(r.outDigest))
-              NodeResult(results.map(_.value), b.result)
+              NodeResult(() => results.map(_.value), b.result)
             ,
             pool
           )
@@ -133,7 +138,9 @@ final class Evaluator(
             dep =>
               val out = Digest.Builder().updateString("uncached").updateString(u.name)
                 .updateDigest(dep.outDigest).result
-              NodeResult(runPrev(u, dep.value), out)
+              // uncached nodes run every evaluation, so the dep is genuinely needed
+              val value = runPrev(u, dep.value)
+              NodeResult(() => value, out)
             ,
             pool
           )
@@ -161,16 +168,26 @@ final class Evaluator(
       */
     private def tryRestore[F, T](c: Task.Cached[F, T], res: ActionResult): Option[NodeResult[T]] =
       try
-        store.getBlob(res.valueDigest).map { bytes =>
-          val value = c.codec.decode(bytes)
+        if !store.containsBlob(res.valueDigest) then None
+        else
+          // decode lazily: on a fully-cached chain, a node's value is deserialized
+          // only if something actually demands it
+          val result = NodeResult[T](
+            () =>
+              c.codec.decode(store.getBlob(res.valueDigest).getOrElse(
+                throw MissingBlobException(res.valueDigest, s"cached value of ${c.name}")
+              )),
+            outDigestOf(res)
+          )
+          listener.onCacheHit(c.name)
+          if res.outputFiles.nonEmpty || res.outputDirs.nonEmpty then
+            listener.onBeforeFilesRestore(c.name, () => result.value)
           var restored = 0
           for f <- res.outputFiles do
             if syncFile(Path.of(f.path), f.digest) then restored += 1
           for d <- res.outputDirs do restored += syncDir(d)
-          listener.onCacheHit(c.name)
           if restored > 0 then listener.onFilesRestored(c.name, restored)
-          NodeResult(value, outDigestOf(res))
-        }
+          Some(result)
       catch case _: MissingBlobException => None
 
     private def compute[F, T](
@@ -203,7 +220,7 @@ final class Evaluator(
       val result = ActionResult(valueDigest, fileEntries.result(), dirEntries.result())
       if writeCache then store.putAction(action, result)
       listener.onComputed(c.name, (System.nanoTime() - t0) / 1000000L)
-      NodeResult(value, outDigestOf(result))
+      NodeResult(() => value, outDigestOf(result))
     end compute
 
     /** True if the file was materialized (false = was already up to date). */

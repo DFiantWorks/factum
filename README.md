@@ -219,6 +219,12 @@ Evaluator(store, cacheEnabled = false).eval(task) // bypass the cache entirely
 Failures are never cached: an exception propagates out of `eval` and the failed
 task re-runs on the next evaluation.
 
+Cached values materialize lazily: on a fully-cached chain, only the values
+actually demanded (the final result, or a recomputing node's input) are
+deserialized; upstream hits contribute just their digests. Generated files are
+always restored eagerly, so the on-disk state is complete even for nodes whose
+values were never decoded.
+
 ### Effect integration
 
 ```scala
