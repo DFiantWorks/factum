@@ -24,6 +24,9 @@ orchestration. Your Scala program is the pipeline; Factum makes it incremental.
 - **Files and folders are first-class.** External inputs are tracked by content
   digest. Generated folders are cached through filename filters and restored
   precisely, including cleanup of stale files.
+- **Code is first-class too.** `CodeRef` digests a class/object together with its
+  transitive code dependencies, so a cache entry can key off "did the code behind
+  this computation actually change" instead of timestamps.
 - **Early cutoff.** If a step re-runs but produces byte-identical output, downstream
   steps are not invalidated.
 
@@ -146,6 +149,37 @@ Factum syncs the scope to the cached manifest: missing or modified matching file
 are re-materialized, stale matching files are deleted, everything else is left
 untouched. Two tasks may manage disjoint filters over the same folder; overlapping
 managed scopes are undefined behavior.
+
+### Code-change detection with CodeRef
+
+Timestamps are the wrong tool for "should this cached result survive a rebuild":
+they change when nothing recompiled, and they miss dependencies compiled elsewhere.
+`CodeRef` answers the real question at runtime, from the class files on disk:
+
+```scala
+val logic = CodeRef(classOf[ReportRenderer])   // digest of the code itself
+
+val report = stats.cachedWithFiles("render", extraKey = (logic, chartStyle)) { s =>
+  ...
+}
+```
+
+The digest covers the class file, its sibling TASTy file (Scala 3 inline method
+bodies live there, not in bytecode), and the transitive closure of every class it
+statically references. Classes in directory classpath entries (your build output,
+including sibling modules) are traversed individually; classes in jars fold the
+whole jar in as one unit; JDK platform classes are skipped. Consequences:
+
+- A rebuild that recompiles nothing relevant does not invalidate, no matter how
+  many timestamps moved.
+- A body change in a helper your code calls invalidates, even when your own class
+  was not recompiled.
+- A change to an unrelated class in the same output directory does not invalidate.
+
+Blind spots, by design: reflection by name, resources read at runtime (use
+`Task.source` for those), and environment state (fold it into `extraKey`).
+Currently bytes are hashed raw, so formatting-only changes to files *inside the
+closure* still invalidate; debug-info stripping is a planned refinement.
 
 ### Stores
 

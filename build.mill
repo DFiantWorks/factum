@@ -48,7 +48,9 @@ object core extends FactumModule:
   def artifactName = "factum-core"
   // Zero-dependency core: enforced, mvnDeps must stay empty.
   def mvnDeps = Seq.empty[Dep]
-  object test extends FactumTests
+  object test extends FactumTests:
+    // CodeRefSpec compiles fixture sources at test time with the real compiler
+    def mvnDeps = super.mvnDeps() ++ Seq(mvn"org.scala-lang::scala3-compiler:${Versions.scala}")
 
 object upickle extends FactumModule:
   def artifactName = "factum-upickle"

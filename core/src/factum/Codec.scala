@@ -33,6 +33,7 @@ object Codec:
 
   given digest: Codec[Digest] = fromString(_.asString, Digest(_))
   given fileRef: Codec[FileRef] = fromString(FileRef.render, FileRef.parse)
+  given codeRef: Codec[CodeRef] = fromString(CodeRef.render, CodeRef.parse)
 
   given option[T](using c: Codec[T]): Codec[Option[T]] = new Codec[Option[T]]:
     def encode(value: Option[T]): Array[Byte] = value match
