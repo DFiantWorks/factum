@@ -38,8 +38,6 @@ orchestration. Your Scala program is the pipeline; Factum makes it incremental.
 | upickle codecs | `io.github.dfiantworks::factum-upickle` | upickle |
 | cats-effect evaluator | `io.github.dfiantworks::factum-cats-effect` | cats-effect |
 
-Not yet published to Maven Central; build locally with `./mill __.publishLocal`
-(`mill.bat` on Windows).
 
 ```scala
 // mill
