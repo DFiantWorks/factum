@@ -102,7 +102,7 @@ What happens across runs:
 | `Task.source(path, filter, quick)` | External file/folder tracked by content digest. A missing path digests as a valid "absent" state. |
 | `a.zip(b)` | Fan-in of two independent tasks, evaluated in parallel. |
 | `Task.sequence(tasks)` | Fan-in of many homogeneous tasks. |
-| `t.cached(name, version, extraKey)(f)` | A cached computation node. |
+| `t.cached(name, version, extraKey, validate)(f)` | A cached computation node. |
 | `t.cachedWithFiles(name, ...)(f)` | Cached node that also declares generated files/folders. |
 | `t.uncached(name)(f)` | Runs every evaluation (live side effects). |
 
@@ -129,6 +129,25 @@ Three invalidation levers, from local to global:
    (tool versions, option sets). Values must be stable across JVM runs; lambdas,
    plain classes, `Set` and `Map` are rejected at runtime with an explanatory error.
 3. `cacheVersion` per evaluator: global flush.
+
+### Hit validation for discovered inputs
+
+The action key can only carry what is known *before* a task runs. When a task
+discovers external inputs while running (a compiler reading data files whose paths
+only its own execution reveals), record them inside the value and pass a
+`validate` hook:
+
+```scala
+val compiled = sources.cached("compile", validate = stillFresh) { srcs => ... }
+// where the value records (path, digest) of every file the run actually read
+def stillFresh(c: Compiled): Boolean = c.readFiles.forall(f => f.digestNow == f.digest)
+```
+
+On a hit the decoded value is passed to `validate`; a rejection recomputes the
+task as if it had missed, overwriting the entry under the same action key, and
+downstream tasks re-key through the fresh output digest. The listener's
+`onCacheInvalidated(name)` fires instead of `onCacheHit`. Supplying a validator
+makes a hit decode the value eagerly; the default keeps the lazy on-demand decode.
 
 ### Folder caching with filters
 

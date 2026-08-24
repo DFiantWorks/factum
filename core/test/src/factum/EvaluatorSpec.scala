@@ -245,6 +245,75 @@ class EvaluatorSpec extends munit.FunSuite:
     assertEquals(forcedValue, "v")
     assertEquals(Files.readString(outFile), "content")
 
+  test("a rejected validation recomputes and overwrites the entry under the same key"):
+    val store = MemoryStore()
+    val runs = AtomicInteger(0)
+    var accept = true
+    var current = "v1"
+    def task = Task.pure("in").cached("t", validate = (_: String) => accept) { _ =>
+      runs.incrementAndGet()
+      current
+    }
+    val ev = Evaluator(store)
+    assertEquals(ev.eval(task), "v1")
+    assertEquals(ev.eval(task), "v1") // accepted hit
+    assertEquals(runs.get, 1)
+    accept = false
+    current = "v2"
+    assertEquals(ev.eval(task), "v2") // rejected: recomputed like a miss
+    assertEquals(runs.get, 2)
+    accept = true
+    assertEquals(ev.eval(task), "v2") // the recomputation overwrote the same entry
+    assertEquals(runs.get, 2)
+
+  test("a rejected upstream validation re-keys downstream through the fresh value"):
+    val store = MemoryStore()
+    var accept = true
+    var current = "v1"
+    val downRuns = AtomicInteger(0)
+    def task = Task.pure("in")
+      .cached("up", validate = (_: String) => accept)(_ => current)
+      .cached("down") { s => downRuns.incrementAndGet(); s.length }
+    val ev = Evaluator(store)
+    assertEquals(ev.eval(task), 2)
+    assertEquals(downRuns.get, 1)
+    accept = false
+    current = "v2-changed"
+    assertEquals(ev.eval(task), 10) // upstream recomputed a new value; downstream re-keyed
+    assertEquals(downRuns.get, 2)
+
+  test("onCacheInvalidated fires instead of onCacheHit on a rejected entry"):
+    val hits = AtomicInteger(0)
+    val invalidated = AtomicInteger(0)
+    val listener = new TaskListener:
+      override def onCacheHit(name: String): Unit = hits.incrementAndGet()
+      override def onCacheInvalidated(name: String): Unit = invalidated.incrementAndGet()
+    val ev = Evaluator(MemoryStore(), listener = listener)
+    var accept = true
+    def task = Task.pure(1).cached("t", validate = (_: Int) => accept)(_ + 1)
+    ev.eval(task)
+    ev.eval(task) // valid hit
+    assertEquals((hits.get, invalidated.get), (1, 0))
+    accept = false
+    ev.eval(task) // rejected
+    assertEquals((hits.get, invalidated.get), (1, 1))
+
+  test("the default validator keeps the lazy value decode on hits"):
+    val store = MemoryStore()
+    val decodes = AtomicInteger(0)
+    def countingCodec: Codec[String] = new Codec[String]:
+      def encode(value: String): Array[Byte] = value.getBytes
+      def decode(bytes: Array[Byte]): String =
+        decodes.incrementAndGet()
+        String(bytes)
+    def task =
+      val up = Task.pure(1).cached("up")(n => s"up$n")(using countingCodec)
+      up.cached("down")(s => s + "!")
+    val ev = Evaluator(store)
+    ev.eval(task)
+    ev.eval(task)
+    assertEquals(decodes.get, 0) // upstream hit never decoded (identity-default validator)
+
   test("listener hooks fire on hit and compute"):
     val hits = AtomicInteger(0)
     val computes = AtomicInteger(0)

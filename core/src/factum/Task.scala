@@ -29,6 +29,13 @@ trait TaskListener:
   def onBeforeFilesRestore(name: String, value: () => Any): Unit = ()
   def onFilesRestored(name: String, count: Int): Unit = ()
 
+  /** A cached entry was found for this node but its `validate` hook rejected it (see
+    * [[Task.cached]]), so the node recomputes as if it had missed. Fires instead of `onCacheHit`,
+    * never alongside it.
+    */
+  def onCacheInvalidated(name: String): Unit = ()
+end TaskListener
+
 object TaskListener:
   object noop extends TaskListener
 
@@ -44,19 +51,45 @@ sealed trait Task[T]:
   /** A cached computation node. `name` + `version` are the node's stable identity: bump `version`
     * whenever the logic of `f` changes. `extraKey` folds additional invalidation inputs (tool
     * versions, options, ...) into the cache key; it must be [[KeyHash]]-stable.
+    *
+    * `validate` is a hit-validation hook for values that record external state the cache key cannot
+    * carry (e.g. files whose paths are only discovered while `f` runs, recorded inside the value):
+    * on a cache hit it receives the decoded cached value and may reject it by returning false, in
+    * which case the node recomputes as if it had missed, overwriting the entry under the same key
+    * (downstream nodes re-key through the fresh output digest). A validator must return false
+    * rather than throw; exceptions propagate. Supplying a validator forces the hit to decode the
+    * value eagerly; the default ([[Task.alwaysValid]]) keeps the lazy on-demand decode.
     */
-  def cached[U: Codec](name: String, version: Int = 1, extraKey: Any = ())(
+  def cached[U: Codec](
+      name: String,
+      version: Int = 1,
+      extraKey: Any = (),
+      validate: U => Boolean = Task.alwaysValid
+  )(
       f: T => U
   ): Task[U] =
-    Task.Cached[T, U](name, version, extraKey, this, t => (f(t), Vector.empty), summon[Codec[U]])
+    Task.Cached[T, U](
+      name,
+      version,
+      extraKey,
+      this,
+      t => (f(t), Vector.empty),
+      summon[Codec[U]],
+      validate
+    )
 
   /** Like [[cached]], but `f` also declares generated files/folders. Declared outputs are stored in
     * the CAS and restored (with stale-file cleanup inside each managed scope) on cache hits.
     */
-  def cachedWithFiles[U: Codec](name: String, version: Int = 1, extraKey: Any = ())(
+  def cachedWithFiles[U: Codec](
+      name: String,
+      version: Int = 1,
+      extraKey: Any = (),
+      validate: U => Boolean = Task.alwaysValid
+  )(
       f: T => (U, Vector[Output])
   ): Task[U] =
-    Task.Cached[T, U](name, version, extraKey, this, f, summon[Codec[U]])
+    Task.Cached[T, U](name, version, extraKey, this, f, summon[Codec[U]], validate)
 
   /** Alias of [[cached]] for map-like readability. */
   def map[U: Codec](name: String, version: Int = 1)(f: T => U): Task[U] =
@@ -70,6 +103,12 @@ sealed trait Task[T]:
 end Task
 
 object Task:
+  /** The default `validate` of [[Task.cached]]: accepts every cached entry. The evaluator
+    * recognizes this instance (by identity) and keeps the lazy on-demand value decode; any other
+    * validator makes a hit decode eagerly so the value can be checked.
+    */
+  val alwaysValid: Any => Boolean = _ => true
+
   /** A constant. Participates in keying via its encoded content. */
   def pure[T: Codec](value: T): Task[T] = Pure(value, summon[Codec[T]])
 
@@ -109,7 +148,8 @@ object Task:
       extraKey: Any,
       prev: Task[F],
       run: F => (T, Vector[Output]),
-      codec: Codec[T]
+      codec: Codec[T],
+      validate: T => Boolean
   ) extends Task[T]
   private[factum] final case class Uncached[F, T](name: String, prev: Task[F], run: F => T)
       extends Task[T]
