@@ -41,9 +41,9 @@ orchestration. Your Scala program is the pipeline; Factum makes it incremental.
 
 ```scala
 // mill
-def mvnDeps = Seq(mvn"io.github.dfiantworks::factum-core::0.2.0")
+def mvnDeps = Seq(mvn"io.github.dfiantworks::factum-core::0.3.0")
 // sbt
-libraryDependencies += "io.github.dfiantworks" %% "factum-core" % "0.2.0"
+libraryDependencies += "io.github.dfiantworks" %% "factum-core" % "0.3.0"
 ```
 
 ## Quick start
