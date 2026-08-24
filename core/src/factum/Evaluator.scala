@@ -163,31 +163,42 @@ final class Evaluator(
       val fromCache = if readCache then store.getAction(action).flatMap(tryRestore(c, _)) else None
       fromCache.getOrElse(compute(c, action, dep))
 
-    /** None when any required blob is missing (falls back to recomputation, which re-caches the
-      * missing artifacts).
+    /** None when any required blob is missing or the node's `validate` hook rejects the decoded
+      * value (falls back to recomputation, which re-caches the missing artifacts / overwrites the
+      * rejected entry under the same action key).
       */
     private def tryRestore[F, T](c: Task.Cached[F, T], res: ActionResult): Option[NodeResult[T]] =
       try
         if !store.containsBlob(res.valueDigest) then None
         else
-          // decode lazily: on a fully-cached chain, a node's value is deserialized
-          // only if something actually demands it
-          val result = NodeResult[T](
-            () =>
-              c.codec.decode(store.getBlob(res.valueDigest).getOrElse(
-                throw MissingBlobException(res.valueDigest, s"cached value of ${c.name}")
-              )),
-            outDigestOf(res)
-          )
-          listener.onCacheHit(c.name)
-          if res.outputFiles.nonEmpty || res.outputDirs.nonEmpty then
-            listener.onBeforeFilesRestore(c.name, () => result.value)
-          var restored = 0
-          for f <- res.outputFiles do
-            if syncFile(Path.of(f.path), f.digest) then restored += 1
-          for d <- res.outputDirs do restored += syncDir(d)
-          if restored > 0 then listener.onFilesRestored(c.name, restored)
-          Some(result)
+          def decode(): T =
+            c.codec.decode(store.getBlob(res.valueDigest).getOrElse(
+              throw MissingBlobException(res.valueDigest, s"cached value of ${c.name}")
+            ))
+          // Default (no validator): decode lazily — on a fully-cached chain, a node's value is
+          // deserialized only if something actually demands it. A validator must inspect the
+          // value, so it forces the decode; a rejected entry is a miss (recomputed and
+          // overwritten under the same action key).
+          val thunkOpt: Option[() => T] =
+            if c.validate eq Task.alwaysValid then Some(() => decode())
+            else
+              val value = decode()
+              if c.validate(value) then Some(() => value)
+              else
+                listener.onCacheInvalidated(c.name)
+                None
+          thunkOpt.map { thunk =>
+            val result = NodeResult[T](thunk, outDigestOf(res))
+            listener.onCacheHit(c.name)
+            if res.outputFiles.nonEmpty || res.outputDirs.nonEmpty then
+              listener.onBeforeFilesRestore(c.name, () => result.value)
+            var restored = 0
+            for f <- res.outputFiles do
+              if syncFile(Path.of(f.path), f.digest) then restored += 1
+            for d <- res.outputDirs do restored += syncDir(d)
+            if restored > 0 then listener.onFilesRestored(c.name, restored)
+            result
+          }
       catch case _: MissingBlobException => None
 
     private def compute[F, T](
